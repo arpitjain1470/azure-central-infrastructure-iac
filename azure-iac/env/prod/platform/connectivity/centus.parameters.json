@@ -1,0 +1,598 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "deployRG": {
+      "value": true
+    },
+    "deployNSG": {
+      "value": true
+    },
+    "deployUDR": {
+      "value": true
+    },
+    "deployVNet": {
+      "value": true
+    },
+    "deploylb": {
+      "value": true
+    },
+    "deploypeering": {
+      "value": true
+    },
+    "tags": {
+      "value": {
+        "Environment": "connectivity",
+        "Cost Center": "A0159",
+        "Department": "IT",
+        "Supported By": "NetworkEngineering",
+        "App": "AzureNetworking",
+        "deploy": "Biceps"
+      }
+    },
+    "rgName": {
+      "value": "rg-connectivity-centus-001"
+    },
+    "location": {
+      "value": "centralus"
+    },
+    "additionalResourceGroups": {
+      "value": [
+        {
+          "name": "rg-connectivity-pafw-centus-001",
+          "location": "centralus",
+          "tags": {
+            "Environment": "connectivity",
+            "Cost Center": "A0159",
+            "Department": "IT",
+            "Supported By": "NetworkEngineering",
+            "App": "AzureNetworking",
+            "deploy": "Biceps"
+          }
+        },
+        {
+          "name": "rg-connectivity-versa-centus-001",
+          "location": "centralus",
+          "tags": {
+            "Environment": "connectivity",
+            "Cost Center": "A0159",
+            "Department": "IT",
+            "Supported By": "NetworkEngineering",
+            "App": "AzureNetworking",
+            "deploy": "Biceps"
+
+          }
+        }
+      ]
+    },
+    "nsgs": {
+      "value": [
+        {
+          "name": "nsg-connectivity-versa-centus-001",
+          "rules": [
+            {
+              "name": "AllowIntranetInBound",
+              "direction": "Inbound",
+              "priority": 100,
+              "access": "Allow",
+              "protocol": "*",
+              "sourcePortRanges": [
+                "*"
+              ],
+              "destinationPortRanges": [
+                "*"
+              ],
+              "sourceAddressPrefixes": [
+                "10.241.0.0/16",
+                "10.242.0.0/16",
+                "10.251.0.0/16",
+                "10.252.0.0/16",
+                "11.9.0.0/16",
+                "11.8.0.0/16",
+                "10.232.32.0/19",
+                "10.248.0.0/16",
+                "10.1.3.0/24",
+                "10.16.0.0/13",
+                "10.24.0.0/13",
+                "10.32.0.0/13",
+                "10.40.0.0/13",
+                "10.56.0.0/13",
+                "10.0.3.0/24",
+                "10.179.105.0/24",
+                "11.148.0.0/16",
+                "11.104.0.0/16",
+                "10.148.0.0/16",
+                "10.240.0.0/16"
+              ],
+              "destinationAddressPrefixes": [
+                "*"
+              ],
+              "description": "Allow inbound traffic from specified intranet CIDRs"
+            },
+            {
+              "name": "AllowIntranetOutBound",
+              "direction": "Outbound",
+              "priority": 100,
+              "access": "Allow",
+              "protocol": "*",
+              "sourcePortRanges": [
+                "*"
+              ],
+              "destinationPortRanges": [
+                "*"
+              ],
+              "sourceAddressPrefixes": [
+                "*"
+              ],
+              "destinationAddressPrefixes": [
+                "10.241.0.0/16",
+                "10.242.0.0/16",
+                "10.251.0.0/16",
+                "10.252.0.0/16",
+                "11.9.0.0/16",
+                "11.8.0.0/16",
+                "10.232.32.0/19",
+                "10.248.0.0/16",
+                "10.1.3.0/24",
+                "10.16.0.0/13",
+                "10.24.0.0/13",
+                "10.32.0.0/13",
+                "10.40.0.0/13",
+                "10.56.0.0/13",
+                "10.0.3.0/24",
+                "10.179.105.0/24",
+                "11.148.0.0/16",
+                "11.104.0.0/16",
+                "10.148.0.0/16",
+                "10.240.0.0/16"
+              ],
+              "description": "Allow outbound traffic to specified intranet CIDRs"
+            }
+          ]
+        },
+        {
+          "name": "nsg-pa-management-centus-001",
+          "rules": [
+            {
+              "name": "AllowIntranetInBound",
+              "direction": "Inbound",
+              "priority": 100,
+              "access": "Allow",
+              "protocol": "*",
+              "sourcePortRanges": [
+                "*"
+              ],
+              "destinationPortRanges": [
+                "*"
+              ],
+              "sourceAddressPrefixes": [
+                "10.241.0.0/16",
+                "10.242.0.0/16",
+                "10.251.0.0/16",
+                "10.252.0.0/16",
+                "11.9.0.0/16",
+                "11.8.0.0/16",
+                "10.232.32.0/19",
+                "10.248.0.0/16",
+                "10.1.3.0/24",
+                "10.16.0.0/13",
+                "10.24.0.0/13",
+                "10.32.0.0/13",
+                "10.40.0.0/13",
+                "10.56.0.0/13",
+                "10.0.3.0/24",
+                "10.179.105.0/24",
+                "11.148.0.0/16",
+                "11.104.0.0/16",
+                "10.148.0.0/16",
+                "10.240.0.0/16"
+              ],
+              "destinationAddressPrefixes": [
+                "*"
+              ],
+              "description": "Allow inbound traffic from specified intranet CIDRs"
+            },
+            {
+              "name": "AllowIntranetOutBound",
+              "direction": "Outbound",
+              "priority": 100,
+              "access": "Allow",
+              "protocol": "*",
+              "sourcePortRanges": [
+                "*"
+              ],
+              "destinationPortRanges": [
+                "*"
+              ],
+              "sourceAddressPrefixes": [
+                "*"
+              ],
+              "destinationAddressPrefixes": [
+                "10.241.0.0/16",
+                "10.242.0.0/16",
+                "10.251.0.0/16",
+                "10.252.0.0/16",
+                "11.9.0.0/16",
+                "11.8.0.0/16",
+                "10.232.32.0/19",
+                "10.248.0.0/16",
+                "10.1.3.0/24",
+                "10.16.0.0/13",
+                "10.24.0.0/13",
+                "10.32.0.0/13",
+                "10.40.0.0/13",
+                "10.56.0.0/13",
+                "10.0.3.0/24",
+                "10.179.105.0/24",
+                "11.148.0.0/16",
+                "11.104.0.0/16",
+                "10.148.0.0/16",
+                "10.240.0.0/16"
+              ],
+              "description": "Allow outbound traffic to specified intranet CIDRs"
+            }
+          ]
+        },
+        {
+          "name": "nsg-pa-trusted-centus-001",
+          "rules": [
+            {
+              "name": "AllowIntranetInBound",
+              "direction": "Inbound",
+              "priority": 100,
+              "access": "Allow",
+              "protocol": "*",
+              "sourcePortRanges": [
+                "*"
+              ],
+              "destinationPortRanges": [
+                "*"
+              ],
+              "sourceAddressPrefixes": [
+                "10.241.0.0/16",
+                "10.242.0.0/16",
+                "10.251.0.0/16",
+                "10.252.0.0/16",
+                "11.9.0.0/16",
+                "11.8.0.0/16",
+                "10.232.32.0/19",
+                "10.248.0.0/16",
+                "10.1.3.0/24",
+                "10.16.0.0/13",
+                "10.24.0.0/13",
+                "10.32.0.0/13",
+                "10.40.0.0/13",
+                "10.56.0.0/13",
+                "10.0.3.0/24",
+                "10.179.105.0/24",
+                "11.148.0.0/16",
+                "11.104.0.0/16",
+                "10.148.0.0/16",
+                "10.240.0.0/16"
+              ],
+              "destinationAddressPrefixes": [
+                "*"
+              ],
+              "description": "Allow inbound traffic from specified intranet CIDRs"
+            },
+            {
+              "name": "AllowIntranetOutBound",
+              "direction": "Outbound",
+              "priority": 100,
+              "access": "Allow",
+              "protocol": "*",
+              "sourcePortRanges": [
+                "*"
+              ],
+              "destinationPortRanges": [
+                "*"
+              ],
+              "sourceAddressPrefixes": [
+                "*"
+              ],
+              "destinationAddressPrefixes": [
+                "10.241.0.0/16",
+                "10.242.0.0/16",
+                "10.251.0.0/16",
+                "10.252.0.0/16",
+                "11.9.0.0/16",
+                "11.8.0.0/16",
+                "10.232.32.0/19",
+                "10.248.0.0/16",
+                "10.1.3.0/24",
+                "10.16.0.0/13",
+                "10.24.0.0/13",
+                "10.32.0.0/13",
+                "10.40.0.0/13",
+                "10.56.0.0/13",
+                "10.0.3.0/24",
+                "10.179.105.0/24",
+                "11.148.0.0/16",
+                "11.104.0.0/16",
+                "10.148.0.0/16",
+                "10.240.0.0/16"
+              ],
+              "description": "Allow outbound traffic to specified intranet CIDRs"
+            }
+          ]
+        },
+        {
+          "name": "nsg-pa-untrust-centus-001",
+          "rules": [
+            {
+              "name": "AllowIntranetInBound",
+              "direction": "Inbound",
+              "priority": 100,
+              "access": "Allow",
+              "protocol": "*",
+              "sourcePortRanges": [
+                "*"
+              ],
+              "destinationPortRanges": [
+                "*"
+              ],
+              "sourceAddressPrefixes": [
+                "10.241.0.0/16",
+                "10.242.0.0/16",
+                "10.251.0.0/16",
+                "10.252.0.0/16",
+                "11.9.0.0/16",
+                "11.8.0.0/16",
+                "10.232.32.0/19",
+                "10.248.0.0/16",
+                "10.1.3.0/24",
+                "10.16.0.0/13",
+                "10.24.0.0/13",
+                "10.32.0.0/13",
+                "10.40.0.0/13",
+                "10.56.0.0/13",
+                "10.0.3.0/24",
+                "10.179.105.0/24",
+                "11.148.0.0/16",
+                "11.104.0.0/16",
+                "10.148.0.0/16",
+                "10.240.0.0/16"
+              ],
+              "destinationAddressPrefixes": [
+                "*"
+              ],
+              "description": "Allow inbound traffic from specified intranet CIDRs"
+            },
+            {
+              "name": "AllowIntranetOutBound",
+              "direction": "Outbound",
+              "priority": 100,
+              "access": "Allow",
+              "protocol": "*",
+              "sourcePortRanges": [
+                "*"
+              ],
+              "destinationPortRanges": [
+                "*"
+              ],
+              "sourceAddressPrefixes": [
+                "*"
+              ],
+              "destinationAddressPrefixes": [
+                "10.241.0.0/16",
+                "10.242.0.0/16",
+                "10.251.0.0/16",
+                "10.252.0.0/16",
+                "11.9.0.0/16",
+                "11.8.0.0/16",
+                "10.232.32.0/19",
+                "10.248.0.0/16",
+                "10.1.3.0/24",
+                "10.16.0.0/13",
+                "10.24.0.0/13",
+                "10.32.0.0/13",
+                "10.40.0.0/13",
+                "10.56.0.0/13",
+                "10.0.3.0/24",
+                "10.179.105.0/24",
+                "11.148.0.0/16",
+                "11.104.0.0/16",
+                "10.148.0.0/16",
+                "10.240.0.0/16"
+              ],
+              "description": "Allow outbound traffic to specified intranet CIDRs"
+            }
+          ]
+        }
+      ]
+    },
+    "udrs": {
+      "value": [
+        {
+          "name": "udr-oracle-centus-001",
+          "routes": []
+        },
+        {
+          "name": "udr-connect-transit-centus-001",
+          "routes": []
+        },
+        {
+          "name": "udr-prod-transit-palo-trusted-centus-001",
+          "routes": []
+        },
+        {
+          "name": "udr-prod-transit-sdwan-versa-trusted-centus-001",
+          "routes": []
+        },
+        {
+          "name": "udr-prod-transit-palo-untrusted-centus-001",
+          "routes": []
+        }
+      ]
+    },
+    "vnets": {
+      "value": [
+        {
+          "vnetName": "vn-it-conn-prod-centus-001",
+          "addressSpace": "10.254.0.0/21",
+          "dnsServers": [
+            "10.254.8.20",
+            "10.241.134.15"
+          ],
+          "subnets": [
+            {
+              "name": "sn-conn-sdwan-versa-untrusted",
+              "prefix": "10.254.7.32/27",
+              "nsgName": "nsg-connectivity-versa-centus-001",
+              "udrName": ""
+            },
+            {
+              "name": "RouteServerSubnet",
+              "prefix": "10.254.2.0/24",
+              "nsgName": "",
+              "udrName": ""
+            },
+            {
+              "name": "sn-conn-ha-network",
+              "prefix": "10.254.4.64/26",
+              "nsgName": "",
+              "udrName": "udr-oracle-centus-001"
+            },
+            {
+              "name": "sn-conn-management",
+              "prefix": "10.254.4.0/26",
+              "nsgName": "nsg-pa-management-centus-001",
+              "udrName": ""
+            },
+            {
+              "name": "GatewaySubnet",
+              "prefix": "10.254.7.64/27",
+              "nsgName": "",
+              "udrName": "udr-connect-transit-centus-001"
+            },
+            {
+              "name": "sn-conn-palo-alto-trusted",
+              "prefix": "10.254.0.0/24",
+              "nsgName": "nsg-pa-trusted-centus-001",
+              "udrName": "udr-prod-transit-palo-trusted-centus-001"
+            },
+            {
+              "name": "sn-conn-sdwan-versa-trusted",
+              "prefix": "10.254.1.0/24",
+              "nsgName": "nsg-pa-trusted-centus-001",
+              "udrName": "udr-prod-transit-sdwan-versa-trusted-centus-001"
+            },
+            {
+              "name": "sn-conn-pvt-endpoint",
+              "prefix": "10.254.3.0/24",
+              "nsgName": "",
+              "udrName": ""
+            },
+            {
+              "name": "sn-conn-palo-alto-untrusted",
+              "prefix": "10.254.7.0/27",
+              "nsgName": "nsg-pa-untrust-centus-001",
+              "udrName": "udr-prod-transit-palo-untrusted-centus-001"
+            }
+          ]
+        }
+      ]
+    },
+    "lbs": {
+      "value": [
+        {
+          "lbName": "ilb-prod-pa-centus-001",
+          "resourceGroupName": "rg-connectivity-pafw-centus-001",
+          "sku": {
+            "name": "Standard",
+            "tier": "Regional"
+          },
+          "frontendConfigs": [],
+          "backendPoolName": "",
+          "backendNicIpConfigIds": [],
+          "probes": [],
+          "rules": []
+        },
+        {
+          "lbName": "ilb-prod-versa-centus-001",
+          "resourceGroupName": "rg-connectivity-versa-centus-001",
+          "sku": {
+            "name": "Standard",
+            "tier": "Regional"
+          },
+          "frontendConfigs": [],
+          "backendPoolName": "",
+          "backendNicIpConfigIds": [],
+          "probes": [],
+          "rules": []
+        },
+        {
+          "lbName": "elb-prod-pa-centus-001",
+          "resourceGroupName": "rg-connectivity-pafw-centus-001",
+          "sku": {
+            "name": "Standard",
+            "tier": "Regional"
+          },
+          "frontendConfigs": [],
+          "backendPoolName": "",
+          "backendNicIpConfigIds": [],
+          "probes": [],
+          "rules": []
+        }
+      ]
+    },
+    "peerings": {
+      "value": [
+        {
+          "sourceVnetName": "vn-it-conn-prod-centus-001",
+          "peeringName": "fromi-itdr-to-vn-it-conn-prod-centus-001",
+          "remoteVnetId": "/subscriptions/893c79ba-9e84-484e-a7fd-753634f266d2/resourceGroups/rg-dr-it-vnets-centus-001/providers/Microsoft.Network/virtualNetworks/vn-dr-it-prod-centus-001",
+          "allowForwardedTraffic": true,
+          "allowGatewayTransit": false,
+          "remoteVnetExists": false,
+          "useRemoteGateways": false
+        },
+        {
+          "sourceVnetName": "vn-it-conn-prod-centus-001",
+          "peeringName": "to-connectivity-from-citrix-centus",
+          "remoteVnetId": "/subscriptions/06a55fc4-a38b-4863-ac58-b97fded385a0/resourceGroups/rg-citrix-vnets-centus-001/providers/Microsoft.Network/virtualNetworks/vn-landing-Citrix-prod-centus-001",
+          "allowForwardedTraffic": true,
+          "allowGatewayTransit": false,
+          "remoteVnetExists": false,
+          "useRemoteGateways": false
+        },
+        {
+          "sourceVnetName": "vn-it-conn-prod-centus-001",
+          "peeringName": "from-dmz-to-connectivity-centus",
+          "remoteVnetId": "/subscriptions/116742d1-2af7-4a16-bcd6-5df14357941e/resourceGroups/rg-dmz-vnets-centus-001/providers/Microsoft.Network/virtualNetworks/vn-dmz-prod-centus-001",
+          "allowForwardedTraffic": true,
+          "allowGatewayTransit": false,
+          "remoteVnetExists": false,
+          "useRemoteGateways": false
+        },
+        {
+          "sourceVnetName": "vn-it-conn-prod-centus-001",
+          "peeringName": "vn-it-conn-prod-centus-001",
+          "remoteVnetId": "/subscriptions/7904fc29-b381-43e8-af84-ee795defac9d/resourceGroups/rg-identity-vnets-centus-001/providers/Microsoft.Network/virtualNetworks/vn-it-identity-prod-centus-001",
+          "allowForwardedTraffic": true,
+          "allowGatewayTransit": false,
+          "remoteVnetExists": false,
+          "useRemoteGateways": false
+        },
+        {
+          "sourceVnetName": "vn-it-conn-prod-centus-001",
+          "peeringName": "transit-emp-qa-private",
+          "remoteVnetId": "/subscriptions/a3668f71-8fd9-4688-acbf-032f9ab9e82f/resourceGroups/rg-emp-qa-vnets-centus-001/providers/Microsoft.Network/virtualNetworks/vn-emp-qa-centus-001",
+          "allowForwardedTraffic": true,
+          "allowGatewayTransit": false,
+          "remoteVnetExists": false,
+          "useRemoteGateways": false
+        },
+        {
+          "sourceVnetName": "vn-it-conn-prod-centus-001",
+          "peeringName": "transit-emp-prod-private",
+          "remoteVnetId": "/subscriptions/25378f7b-d9e2-4491-ae93-e7bf087a73da/resourceGroups/rg-emp-prod-vnets-centus-001/providers/Microsoft.Network/virtualNetworks/vn-emp-prod-centus-001",
+          "allowForwardedTraffic": true,
+          "allowGatewayTransit": false,
+          "remoteVnetExists": false,
+          "useRemoteGateways": false
+        }
+      ]
+    }
+  }
+}
