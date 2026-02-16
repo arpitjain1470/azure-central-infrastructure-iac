@@ -1,0 +1,507 @@
+trigger: none
+
+# ======================================================
+# PARAMETERS
+# ======================================================
+parameters:
+  # Toggle which level(s) to run
+  - name: runLanding
+    type: boolean
+    default: false            # often Platform-only is the common case
+  - name: runPlatform
+    type: boolean
+    default: true
+
+  # Subscriptions per level
+  - name: landingSubscriptions
+    type: object
+    default:
+      - Citrix
+      - DMZ
+      - DR-IT
+      - EMP-QA
+      - EMP-Prod
+    values:
+      - Citrix
+      - DMZ
+      - DR-IT
+      - EMP-QA
+      - EMP-Prod
+      - Connectivity
+      - Identity
+
+  - name: platformSubscriptions
+    type: object
+    default:
+      - Connectivity
+      - Identity
+    values:
+      - Citrix
+      - DMZ
+      - DR-IT
+      - EMP-QA
+      - EMP-Prod
+      - Connectivity
+      - Identity
+
+  # Parameter file name per subscription folder
+  - name: regionFile
+    type: string
+    default: centus.parameters.json
+
+  # WHAT to delete
+  - name: deleteScope
+    type: string
+    default: AdditionalRGsOnly
+    values: [ AdditionalRGsOnly, EntireRGs, ResourcesOnly ]
+
+  # If ResourcesOnly, choose resource types
+  - name: deleteResources
+    type: object
+    default:
+      vnet: true
+      subnets: true
+      nsg: true
+      udr: true
+      lb: true
+      peering: true
+
+# ======================================================
+# VARIABLES (service connections)
+# ======================================================
+variables:
+  "prodSc.CITRIX":       WC-SP-Central-WC1-DR-Citrix
+  "prodSc.CONNECTIVITY": WC-SP-Central-WC1-DR-Connectivity
+  "prodSc.DMZ":          WC-SP-Central-WC1-DR-DMZ
+  "prodSc.DR_IT":        WC-SP-Central-WC1-DR-DR-IT
+  "prodSc.IDENTITY":     WC-SP-Central-WC1-DR-Identity
+  "prodSc.EMP_QA":       WC-SP-Central-WC1-DR-EMP-QA
+  "prodSc.EMP_PROD":     WC-SP-Central-WC1-DR-EMP-Prod
+
+pool:
+  vmImage: ubuntu-latest
+
+# ======================================================
+# STAGE (single stage → no stage-picker surprises)
+# ======================================================
+stages:
+- stage: DeleteAll
+  displayName: "DELETE run"
+  jobs:
+
+  # ---------- INIT (always runs) ----------
+  - job: Init
+    displayName: "Init / echo inputs"
+    steps:
+    - script: |
+        echo "deleteScope=${{ parameters.deleteScope }}"
+        echo "runLanding=${{ parameters.runLanding }}  runPlatform=${{ parameters.runPlatform }}"
+      displayName: "Echo inputs"
+
+  # ---------- PLATFORM ----------
+  - ${{ if parameters.runPlatform }}:
+    - job: Delete_Platform
+      displayName: "DELETE (Platform)"
+      dependsOn: Init
+      steps:
+
+      # Loop each Platform subscription
+      - ${{ each sub in parameters.platformSubscriptions }}:
+        # 1) Parse parameter file → MAIN_RG & Additional RGs
+        - task: AzureCLI@2
+          displayName: "[Platform/${{ sub }}] Parse param file → RGs"
+          inputs:
+            azureSubscription: ${{ variables[format('prodSc.{0}', upper(replace(sub,'-','_')))] }}
+            scriptType: bash
+            scriptLocation: inlineScript
+            inlineScript: |
+              set -euo pipefail
+              PARAM_PATH="azure-iac/env/prod/Platform/${{ sub }}/${{ parameters.regionFile }}"
+              echo "PARAM_PATH=$PARAM_PATH"
+
+              if [[ ! -f "$PARAM_PATH" ]]; then
+                echo "ERROR: Missing param file at $PARAM_PATH"; exit 1
+              fi
+
+              MAIN_RG=$(jq -r '.parameters.rgName.value // empty' "$PARAM_PATH")
+              [[ -z "$MAIN_RG" ]] && { echo "ERROR: .parameters.rgName.value missing"; exit 1; }
+
+              jq -r '.parameters.additionalResourceGroups.value[]?.name // empty' "$PARAM_PATH" > add_rgs.txt || true
+
+              echo "MAIN_RG=$MAIN_RG"
+              echo "##vso[task.setvariable variable=MAIN_RG;issecret=false]$MAIN_RG"
+              echo "Additional RGs:"
+              if [[ -s add_rgs.txt ]]; then nl -ba add_rgs.txt; else echo "(none)"; fi
+
+        # 2) Remove locks (best-effort) if deleting RGs
+        - ${{ if or(eq(parameters.deleteScope, 'AdditionalRGsOnly'), eq(parameters.deleteScope, 'EntireRGs')) }}:
+          - task: AzureCLI@2
+            displayName: "[Platform/${{ sub }}] Remove locks (additional+main)"
+            inputs:
+              azureSubscription: ${{ variables[format('prodSc.{0}', upper(replace(sub,'-','_')))] }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                if [[ -s add_rgs.txt ]]; then
+                  while read -r ARG; do
+                    [[ -z "$ARG" ]] && continue
+                    if az group exists -n "$ARG" | grep -qi true; then
+                      for L in $(az group lock list -g "$ARG" --query "[].id" -o tsv || true); do
+                        az lock delete --ids "$L" || true
+                      done
+                    fi
+                  done < add_rgs.txt
+                fi
+                [[ -z "$(MAIN_RG)" ]] && { echo "ERROR: MAIN_RG unset"; exit 1; }
+                if az group exists -n "$(MAIN_RG)" | grep -qi true; then
+                  for L in $(az group lock list -g "$(MAIN_RG)" --query "[].id" -o tsv || true); do
+                    az lock delete --ids "$L" || true
+                  done
+                fi
+
+        # 3a) AdditionalRGsOnly — delete only additional RGs (+wait)
+        - ${{ if eq(parameters.deleteScope, 'AdditionalRGsOnly') }}:
+          - task: AzureCLI@2
+            displayName: "[Platform/${{ sub }}] Delete ONLY additional RGs (+wait)"
+            inputs:
+              azureSubscription: ${{ variables[format('prodSc.{0}', upper(replace(sub,'-','_')))] }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                if [[ ! -s add_rgs.txt ]]; then
+                  echo "No additional RGs to delete"; exit 0
+                fi
+                while read -r ARG; do
+                  [[ -z "$ARG" ]] && continue
+                  if az group exists -n "$ARG" | grep -qi true; then
+                    echo "Deleting additional RG: $ARG"
+                    az group delete -n "$ARG" --yes --no-wait || true
+                    # Wait until deletion completes (recommended)
+                    az group wait -n "$ARG" --deleted --interval 15 --timeout 7200
+                  else
+                    echo "RG '$ARG' not found (already deleted)."
+                  fi
+                done < add_rgs.txt
+                echo "Additional RGs deletion complete (MAIN_RG untouched)."
+
+        # 3b) EntireRGs — delete additional then MAIN_RG (+wait)
+        - ${{ if eq(parameters.deleteScope, 'EntireRGs') }}:
+          - task: AzureCLI@2
+            displayName: "[Platform/${{ sub }}] Delete ENTIRE RGs (+wait)"
+            inputs:
+              azureSubscription: ${{ variables[format('prodSc.{0}', upper(replace(sub,'-','_')))] }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                # Additional first
+                if [[ -s add_rgs.txt ]]; then
+                  while read -r ARG; do
+                    [[ -z "$ARG" ]] && continue
+                    if az group exists -n "$ARG" | grep -qi true; then
+                      az group delete -n "$ARG" --yes --no-wait || true
+                      az group wait -n "$ARG" --deleted --interval 15 --timeout 7200
+                    fi
+                  done < add_rgs.txt
+                fi
+                # Main next
+                [[ -z "$(MAIN_RG)" ]] && { echo "ERROR: MAIN_RG unset"; exit 1; }
+                RG="$(MAIN_RG)"
+                if az group exists -n "$RG" | grep -qi true; then
+                  az group delete -n "$RG" --yes --no-wait || true
+                  az group wait -n "$RG" --deleted --interval 15 --timeout 7200
+                else
+                  echo "MAIN_RG '$RG' already absent."
+                fi
+                echo "Entire RGs deletion complete."
+
+        # 3c) ResourcesOnly — delete selected resource types (idempotent + waits)
+        - ${{ if eq(parameters.deleteScope, 'ResourcesOnly') }}:
+          - task: AzureCLI@2
+            displayName: "[Platform/${{ sub }}] Delete Selected Resources (idempotent + waits)"
+            inputs:
+              azureSubscription: ${{ variables[format('prodSc.{0}', upper(replace(sub,'-','_')))] }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                PARAM_PATH="azure-iac/env/prod/Platform/${{ sub }}/${{ parameters.regionFile }}"
+                MAIN_RG=$(jq -r '.parameters.rgName.value // empty' "$PARAM_PATH")
+                [[ -z "$MAIN_RG" ]] && { echo "ERROR: rgName missing"; exit 1; }
+                echo "MAIN_RG=$MAIN_RG"
+
+                # Peerings (delete first)
+                if [[ "${{ parameters.deleteResources.peering }}" == "true" ]]; then
+                  PEERS=$(jq -c '.parameters.peerings.value[]? // empty' "$PARAM_PATH" || true)
+                  if [[ -n "$PEERS" ]]; then
+                    while read -r P; do
+                      SRC=$(echo "$P" | jq -r '.sourceVnetName // empty')
+                      NAME=$(echo "$P" | jq -r '.peeringName // empty')
+                      [[ -z "$SRC" || -z "$NAME" ]] && continue
+                      az network vnet peering delete -g "$MAIN_RG" --vnet-name "$SRC" -n "$NAME" || true
+                      az resource wait --namespace Microsoft.Network \
+                        --resource-type "virtualNetworks/virtualNetworkPeerings" \
+                        --parent "virtualNetworks/$SRC" -g "$MAIN_RG" -n "$NAME" --deleted \
+                        --interval 10 --timeout 300 || true
+                    done <<< "$PEERS"
+                  fi
+                fi
+
+                # LBs
+                if [[ "${{ parameters.deleteResources.lb }}" == "true" ]]; then
+                  LBS=$(jq -r '.parameters.lbs.value[]?.lbName // empty' "$PARAM_PATH" || true)
+                  for L in $LBS; do
+                    [[ -z "$L" ]] && continue
+                    az network lb delete -g "$MAIN_RG" -n "$L" || true
+                    az resource wait --namespace Microsoft.Network --resource-type "loadBalancers" \
+                      -g "$MAIN_RG" -n "$L" --deleted --interval 10 --timeout 600 || true
+                  done
+                fi
+
+                # Subnets
+                if [[ "${{ parameters.deleteResources.subnets }}" == "true" ]]; then
+                  VNETS=$(jq -r '.parameters.vnets.value[]?.vnetName // empty' "$PARAM_PATH" || true)
+                  for V in $VNETS; do
+                    [[ -z "$V" ]] && continue
+                    SUBS=$(az network vnet subnet list -g "$MAIN_RG" --vnet-name "$V" --query "[].name" -o tsv 2>/dev/null || true)
+                    for S in $SUBS; do az network vnet subnet delete -g "$MAIN_RG" --vnet-name "$V" -n "$S" || true; done
+                  done
+                fi
+
+                # VNets
+                if [[ "${{ parameters.deleteResources.vnet }}" == "true" ]]; then
+                  VNETS=$(jq -r '.parameters.vnets.value[]?.vnetName // empty' "$PARAM_PATH" || true)
+                  for V in $VNETS; do
+                    [[ -z "$V" ]] && continue
+                    az network vnet delete -g "$MAIN_RG" -n "$V" || true
+                    az resource wait --namespace Microsoft.Network --resource-type "virtualNetworks" \
+                      -g "$MAIN_RG" -n "$V" --deleted --interval 10 --timeout 900 || true
+                  done
+                fi
+
+                # NSGs
+                if [[ "${{ parameters.deleteResources.nsg }}" == "true" ]]; then
+                  NSGS=$(jq -r '.parameters.nsgs.value[]?.name // empty' "$PARAM_PATH" || true)
+                  for N in $NSGS; do
+                    [[ -z "$N" ]] && continue
+                    az network nsg delete -g "$MAIN_RG" -n "$N" || true
+                    az resource wait --namespace Microsoft.Network --resource-type "networkSecurityGroups" \
+                      -g "$MAIN_RG" -n "$N" --deleted --interval 10 --timeout 600 || true
+                  done
+                fi
+
+                # UDRs
+                if [[ "${{ parameters.deleteResources.udr }}" == "true" ]]; then
+                  UDRS=$(jq -r '.parameters.udrs.value[]?.name // empty' "$PARAM_PATH" || true)
+                  for R in $UDRS; do
+                    [[ -z "$R" ]] && continue
+                    az network route-table delete -g "$MAIN_RG" -n "$R" || true
+                    az resource wait --namespace Microsoft.Network --resource-type "routeTables" \
+                      -g "$MAIN_RG" -n "$R" --deleted --interval 10 --timeout 600 || true
+                  done
+                fi
+
+                echo "Selected resource deletions complete."
+
+  # ---------- LANDING ----------
+  - ${{ if parameters.runLanding }}:
+    - job: Delete_Landing
+      displayName: "DELETE (Landing)"
+      dependsOn: Init
+      steps:
+
+      - ${{ each sub in parameters.landingSubscriptions }}:
+        # 1) Parse parameter file → MAIN_RG & Additional RGs
+        - task: AzureCLI@2
+          displayName: "[Landing/${{ sub }}] Parse param file → RGs"
+          inputs:
+            azureSubscription: ${{ variables[format('prodSc.{0}', upper(replace(sub,'-','_')))] }}
+            scriptType: bash
+            scriptLocation: inlineScript
+            inlineScript: |
+              set -euo pipefail
+              PARAM_PATH="azure-iac/env/prod/Landing/${{ sub }}/${{ parameters.regionFile }}"
+              echo "PARAM_PATH=$PARAM_PATH"
+
+              if [[ ! -f "$PARAM_PATH" ]]; then
+                echo "ERROR: Missing param file at $PARAM_PATH"; exit 1
+              fi
+
+              MAIN_RG=$(jq -r '.parameters.rgName.value // empty' "$PARAM_PATH")
+              [[ -z "$MAIN_RG" ]] && { echo "ERROR: .parameters.rgName.value missing"; exit 1; }
+
+              jq -r '.parameters.additionalResourceGroups.value[]?.name // empty' "$PARAM_PATH" > add_rgs.txt || true
+
+              echo "MAIN_RG=$MAIN_RG"
+              echo "##vso[task.setvariable variable=MAIN_RG;issecret=false]$MAIN_RG"
+              echo "Additional RGs:"
+              if [[ -s add_rgs.txt ]]; then nl -ba add_rgs.txt; else echo "(none)"; fi
+
+        # 2) Remove locks (best-effort) if deleting RGs
+        - ${{ if or(eq(parameters.deleteScope, 'AdditionalRGsOnly'), eq(parameters.deleteScope, 'EntireRGs')) }}:
+          - task: AzureCLI@2
+            displayName: "[Landing/${{ sub }}] Remove locks (additional+main)"
+            inputs:
+              azureSubscription: ${{ variables[format('prodSc.{0}', upper(replace(sub,'-','_')))] }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                if [[ -s add_rgs.txt ]]; then
+                  while read -r ARG; do
+                    [[ -z "$ARG" ]] && continue
+                    if az group exists -n "$ARG" | grep -qi true; then
+                      for L in $(az group lock list -g "$ARG" --query "[].id" -o tsv || true); do
+                        az lock delete --ids "$L" || true
+                      done
+                    fi
+                  done < add_rgs.txt
+                fi
+                [[ -z "$(MAIN_RG)" ]] && { echo "ERROR: MAIN_RG unset"; exit 1; }
+                if az group exists -n "$(MAIN_RG)" | grep -qi true; then
+                  for L in $(az group lock list -g "$(MAIN_RG)" --query "[].id" -o tsv || true); do
+                    az lock delete --ids "$L" || true
+                  done
+                fi
+
+        # 3a) AdditionalRGsOnly — delete only additional RGs (+wait)
+        - ${{ if eq(parameters.deleteScope, 'AdditionalRGsOnly') }}:
+          - task: AzureCLI@2
+            displayName: "[Landing/${{ sub }}] Delete ONLY additional RGs (+wait)"
+            inputs:
+              azureSubscription: ${{ variables[format('prodSc.{0}', upper(replace(sub,'-','_')))] }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                if [[ ! -s add_rgs.txt ]]; then
+                  echo "No additional RGs to delete"; exit 0
+                fi
+                while read -r ARG; do
+                  [[ -z "$ARG" ]] && continue
+                  if az group exists -n "$ARG" | grep -qi true; then
+                    echo "Deleting additional RG: $ARG"
+                    az group delete -n "$ARG" --yes --no-wait || true
+                    az group wait -n "$ARG" --deleted --interval 15 --timeout 7200
+                  else
+                    echo "RG '$ARG' not found (already deleted)."
+                  fi
+                done < add_rgs.txt
+                echo "Additional RGs deletion complete (MAIN_RG untouched)."
+
+        # 3b) EntireRGs — delete additional then MAIN_RG (+wait)
+        - ${{ if eq(parameters.deleteScope, 'EntireRGs') }}:
+          - task: AzureCLI@2
+            displayName: "[Landing/${{ sub }}] Delete ENTIRE RGs (+wait)"
+            inputs:
+              azureSubscription: ${{ variables[format('prodSc.{0}', upper(replace(sub,'-','_')))] }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                if [[ -s add_rgs.txt ]]; then
+                  while read -r ARG; do
+                    [[ -z "$ARG" ]] && continue
+                    if az group exists -n "$ARG" | grep -qi true; then
+                      az group delete -n "$ARG" --yes --no-wait || true
+                      az group wait -n "$ARG" --deleted --interval 15 --timeout 7200
+                    fi
+                  done < add_rgs.txt
+                fi
+                [[ -z "$(MAIN_RG)" ]] && { echo "ERROR: MAIN_RG unset"; exit 1; }
+                RG="$(MAIN_RG)"
+                if az group exists -n "$RG" | grep -qi true; then
+                  az group delete -n "$RG" --yes --no-wait || true
+                  az group wait -n "$RG" --deleted --interval 15 --timeout 7200
+                fi
+                echo "Entire RGs deletion complete."
+
+        # 3c) ResourcesOnly — delete selected resource types (idempotent + waits)
+        - ${{ if eq(parameters.deleteScope, 'ResourcesOnly') }}:
+          - task: AzureCLI@2
+            displayName: "[Landing/${{ sub }}] Delete Selected Resources (idempotent + waits)"
+            inputs:
+              azureSubscription: ${{ variables[format('prodSc.{0}', upper(replace(sub,'-','_')))] }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                PARAM_PATH="azure-iac/env/prod/Landing/${{ sub }}/${{ parameters.regionFile }}"
+                MAIN_RG=$(jq -r '.parameters.rgName.value // empty' "$PARAM_PATH")
+                [[ -z "$MAIN_RG" ]] && { echo "ERROR: rgName missing"; exit 1; }
+                echo "MAIN_RG=$MAIN_RG"
+
+                # Peerings
+                if [[ "${{ parameters.deleteResources.peering }}" == "true" ]]; then
+                  PEERS=$(jq -c '.parameters.peerings.value[]? // empty' "$PARAM_PATH" || true)
+                  if [[ -n "$PEERS" ]]; then
+                    while read -r P; do
+                      SRC=$(echo "$P" | jq -r '.sourceVnetName // empty')
+                      NAME=$(echo "$P" | jq -r '.peeringName // empty')
+                      [[ -z "$SRC" || -z "$NAME" ]] && continue
+                      az network vnet peering delete -g "$MAIN_RG" --vnet-name "$SRC" -n "$NAME" || true
+                      az resource wait --namespace Microsoft.Network \
+                        --resource-type "virtualNetworks/virtualNetworkPeerings" \
+                        --parent "virtualNetworks/$SRC" -g "$MAIN_RG" -n "$NAME" --deleted \
+                        --interval 10 --timeout 300 || true
+                    done <<< "$PEERS"
+                  fi
+                fi
+
+                # LBs
+                if [[ "${{ parameters.deleteResources.lb }}" == "true" ]]; then
+                  LBS=$(jq -r '.parameters.lbs.value[]?.lbName // empty' "$PARAM_PATH" || true)
+                  for L in $LBS; do
+                    [[ -z "$L" ]] && continue
+                    az network lb delete -g "$MAIN_RG" -n "$L" || true
+                    az resource wait --namespace Microsoft.Network --resource-type "loadBalancers" \
+                      -g "$MAIN_RG" -n "$L" --deleted --interval 10 --timeout 600 || true
+                  done
+                fi
+
+                # Subnets
+                if [[ "${{ parameters.deleteResources.subnets }}" == "true" ]]; then
+                  VNETS=$(jq -r '.parameters.vnets.value[]?.vnetName // empty' "$PARAM_PATH" || true)
+                  for V in $VNETS; do
+                    [[ -z "$V" ]] && continue
+                    SUBS=$(az network vnet subnet list -g "$MAIN_RG" --vnet-name "$V" --query "[].name" -o tsv 2>/dev/null || true)
+                    for S in $SUBS; do az network vnet subnet delete -g "$MAIN_RG" --vnet-name "$V" -n "$S" || true; done
+                  done
+                fi
+
+                # VNets
+                if [[ "${{ parameters.deleteResources.vnet }}" == "true" ]]; then
+                  VNETS=$(jq -r '.parameters.vnets.value[]?.vnetName // empty' "$PARAM_PATH" || true)
+                  for V in $VNETS; do
+                    [[ -z "$V" ]] && continue
+                    az network vnet delete -g "$MAIN_RG" -n "$V" || true
+                    az resource wait --namespace Microsoft.Network --resource-type "virtualNetworks" \
+                      -g "$MAIN_RG" -n "$V" --deleted --interval 10 --timeout 900 || true
+                  done
+                fi
+
+                # NSGs
+                if [[ "${{ parameters.deleteResources.nsg }}" == "true" ]]; then
+                  NSGS=$(jq -r '.parameters.nsgs.value[]?.name // empty' "$PARAM_PATH" || true)
+                  for N in $NSGS; do
+                    [[ -z "$N" ]] && continue
+                    az network nsg delete -g "$MAIN_RG" -n "$N" || true
+                    az resource wait --namespace Microsoft.Network --resource-type "networkSecurityGroups" \
+                      -g "$MAIN_RG" -n "$N" --deleted --interval 10 --timeout 600 || true
+                  done
+                fi
+
+                # UDRs
+                if [[ "${{ parameters.deleteResources.udr }}" == "true" ]]; then
+                  UDRS=$(jq -r '.parameters.udrs.value[]?.name // empty' "$PARAM_PATH" || true)
+                  for R in $UDRS; do
+                    [[ -z "$R" ]] && continue
+                    az network route-table delete -g "$MAIN_RG" -n "$R" || true
+                    az resource wait --namespace Microsoft.Network --resource-type "routeTables" \
+                      -g "$MAIN_RG" -n "$R" --deleted --interval 10 --timeout 600 || true
+                  done
+                fi
+
+                echo "Selected resource deletions complete."

@@ -1,0 +1,488 @@
+trigger: none
+
+# ======================================================
+# PARAMETERS
+# ======================================================
+parameters:
+  # Toggle which level(s) to run
+  - name: runLanding
+    type: boolean
+    default: true
+
+  - name: runPlatform
+    type: boolean
+    default: true
+
+  # Select subscriptions per level
+  - name: landingSubscriptions
+    type: object
+    default:
+      - Citrix
+      - DMZ
+      - DR-IT
+      - EMP-QA
+      - EMP-Prod
+      # Add Identity here only if you really treat it as a Landing zone. For you, Identity is Platform.
+    values:
+      - Citrix
+      - DMZ
+      - DR-IT
+      - EMP-QA
+      - EMP-Prod
+      - Connectivity
+      - Identity
+
+  - name: platformSubscriptions
+    type: object
+    default:
+      - Connectivity
+      - Identity
+    values:
+      - Citrix
+      - DMZ
+      - DR-IT
+      - EMP-QA
+      - EMP-Prod
+      - Connectivity
+      - Identity
+
+  # Common parameters
+  - name: regionFile
+    type: string
+    default: centus.parameters.json
+
+  # Feature flags (Bicep expects these)
+  - name: deployRG
+    type: boolean
+    default: true
+  - name: deployNSG
+    type: boolean
+    default: true
+  - name: deployUDR
+    type: boolean
+    default: true
+  - name: deployVNet
+    type: boolean
+    default: true
+  - name: deploypeering
+    type: boolean
+    default: true
+
+  # Toggle WHAT-IF on/off
+  - name: runWhatIf
+    type: boolean
+    default: true
+
+# ======================================================
+# VARIABLES
+# ======================================================
+variables:
+  # PROD subscription → service connection mappings
+  "prodSc.CITRIX":       WC-SP-Central-WC1-DR-Citrix
+  "prodSc.CONNECTIVITY": WC-SP-Central-WC1-DR-Connectivity
+  "prodSc.DMZ":          WC-SP-Central-WC1-DR-DMZ
+  "prodSc.DR_IT":        WC-SP-Central-WC1-DR-DR-IT
+  "prodSc.IDENTITY":     WC-SP-Central-WC1-DR-Identity
+  "prodSc.EMP_QA":       WC-SP-Central-WC1-DR-EMP-QA
+  "prodSc.EMP_PROD":     WC-SP-Central-WC1-DR-EMP-Prod
+
+pool:
+  vmImage: ubuntu-latest
+
+# ======================================================
+# STAGES (Platform → Landing → Platform Peerings → Landing Peerings)
+#   - Stage order enforces sequencing safely
+# ======================================================
+stages:
+
+  # =========================== PLATFORM WHAT-IF ===========================
+  - ${{ if eq(parameters.runPlatform, true) }}:
+    - stage: WhatIf_Platform
+      displayName: WHAT-IF (Platform)
+      condition: and(succeeded(), eq(${{ parameters.runWhatIf }}, true))
+      jobs:
+      - ${{ each sub in parameters.platformSubscriptions }}:
+        - job: WI_PLATFORM_${{ replace(sub, '-', '_') }}
+          displayName: "WHAT-IF → Platform / ${{ sub }}"
+          steps:
+          - task: AzureCLI@2
+            displayName: "WHAT-IF (Platform ${{ sub }})"
+            inputs:
+              azureSubscription: ${{ variables[format('prodSc.{0}', upper(replace(sub,'-','_')))] }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              workingDirectory: $(Build.SourcesDirectory)
+              inlineScript: |
+                set -euo pipefail
+                PARAM_PATH="azure-iac/env/prod/Platform/${{ sub }}/${{ parameters.regionFile }}"
+                echo "Running WHAT-IF for PLATFORM subscription: ${{ sub }}"
+                echo "Using param file: $PARAM_PATH"
+
+                az deployment sub what-if \
+                  --location centralus \
+                  --template-file azure-iac/main.bicep \
+                  --parameters @"$PARAM_PATH" \
+                    deployRG=${{ lower(parameters.deployRG) }} \
+                    deployNSG=${{ lower(parameters.deployNSG) }} \
+                    deployUDR=${{ lower(parameters.deployUDR) }} \
+                    deployVNet=${{ lower(parameters.deployVNet) }} \
+                    deploypeering=false
+
+  # =========================== PLATFORM DEPLOY ===========================
+  - ${{ if eq(parameters.runPlatform, true) }}:
+    - stage: Deploy_Platform
+      displayName: DEPLOY (Platform)
+      dependsOn: WhatIf_Platform
+      condition: and(succeeded(), or(eq(${{ parameters.runWhatIf }}, false), succeeded('WhatIf_Platform')))
+      jobs:
+      - ${{ each sub in parameters.platformSubscriptions }}:
+        - job: DEPLOY_PLATFORM_${{ replace(sub, '-', '_') }}
+          displayName: "DEPLOY → Platform / ${{ sub }}"
+          steps:
+
+          # ---- Phase 1: RGs only ----
+          - task: AzureCLI@2
+            displayName: "Phase 1: RGs only (Platform ${{ sub }})"
+            condition: eq('${{ parameters.deployRG }}','true')
+            inputs:
+              azureSubscription: ${{ variables[format('prodSc.{0}', upper(replace(sub,'-','_')))] }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              workingDirectory: $(Build.SourcesDirectory)
+              inlineScript: |
+                set -euo pipefail
+                PARAM_PATH="azure-iac/env/prod/Platform/${{ sub }}/${{ parameters.regionFile }}"
+                echo "Phase 1 (RGs) Platform → ${{ sub }} using $PARAM_PATH"
+
+                az deployment sub create \
+                  --location centralus \
+                  --template-file azure-iac/main.bicep \
+                  --parameters @"$PARAM_PATH" \
+                    deployRG=true \
+                    deployNSG=false \
+                    deployUDR=false \
+                    deployVNet=false \
+                    deploypeering=false \
+                    deploylb=false
+
+          # ---- Wait for RGs (propagation) ----
+          - task: AzureCLI@2
+            displayName: "Wait for RGs (Platform ${{ sub }})"
+            condition: eq('${{ parameters.deployRG }}','true')
+            inputs:
+              azureSubscription: ${{ variables[format('prodSc.{0}', upper(replace(sub,'-','_')))] }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              workingDirectory: $(Build.SourcesDirectory)
+              inlineScript: |
+                set -euo pipefail
+                PARAM_PATH="azure-iac/env/prod/Platform/${{ sub }}/${{ parameters.regionFile }}"
+                rgName=$(jq -r '.parameters.rgName.value' "$PARAM_PATH")
+                echo "Waiting for main RG: $rgName"
+                az group wait --name "$rgName" --created --timeout 300
+
+                addRgCount=$(jq '.parameters.additionalResourceGroups.value | length' "$PARAM_PATH" 2>/dev/null || echo 0)
+                if [ "$addRgCount" -gt 0 ]; then
+                  for i in $(seq 0 $((addRgCount-1))); do
+                    addRgName=$(jq -r ".parameters.additionalResourceGroups.value[$i].name" "$PARAM_PATH")
+                    echo "Waiting for additional RG: $addRgName"
+                    az group wait --name "$addRgName" --created --timeout 300 || true
+                  done
+                fi
+
+          # ---- Phase 2: Core (no peering) ----
+          - task: AzureCLI@2
+            displayName: "Phase 2: Core (Platform ${{ sub }})"
+            condition: or(
+                         eq('${{ parameters.deployNSG }}','true'),
+                         eq('${{ parameters.deployUDR }}','true'),
+                         eq('${{ parameters.deployVNet }}','true')
+                       )
+            inputs:
+              azureSubscription: ${{ variables[format('prodSc.{0}', upper(replace(sub,'-','_')))] }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              workingDirectory: $(Build.SourcesDirectory)
+              inlineScript: |
+                set -euo pipefail
+                PARAM_PATH="azure-iac/env/prod/Platform/${{ sub }}/${{ parameters.regionFile }}"
+                echo "Phase 2 (Core) Platform → ${{ sub }} using $PARAM_PATH"
+
+                az deployment sub create \
+                  --location centralus \
+                  --template-file azure-iac/main.bicep \
+                  --parameters @"$PARAM_PATH" \
+                    deployRG=false \
+                    deployNSG=${{ lower(parameters.deployNSG) }} \
+                    deployUDR=${{ lower(parameters.deployUDR) }} \
+                    deployVNet=${{ lower(parameters.deployVNet) }} \
+                    deploypeering=false
+
+  # =========================== LANDING WHAT-IF ===========================
+  - ${{ if eq(parameters.runLanding, true) }}:
+    - stage: WhatIf_Landing
+      displayName: WHAT-IF (Landing)
+      condition: and(succeeded(), eq(${{ parameters.runWhatIf }}, true))
+      jobs:
+      - ${{ each sub in parameters.landingSubscriptions }}:
+        - job: WI_LANDING_${{ replace(sub, '-', '_') }}
+          displayName: "WHAT-IF → Landing / ${{ sub }}"
+          steps:
+          - task: AzureCLI@2
+            displayName: "WHAT-IF (Landing ${{ sub }})"
+            inputs:
+              azureSubscription: ${{ variables[format('prodSc.{0}', upper(replace(sub,'-','_')))] }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              workingDirectory: $(Build.SourcesDirectory)
+              inlineScript: |
+                set -euo pipefail
+                PARAM_PATH="azure-iac/env/prod/Landing/${{ sub }}/${{ parameters.regionFile }}"
+                echo "Running WHAT-IF for LANDING subscription: ${{ sub }}"
+                echo "Using param file: $PARAM_PATH"
+
+                az deployment sub what-if \
+                  --location centralus \
+                  --template-file azure-iac/main.bicep \
+                  --parameters @"$PARAM_PATH" \
+                    deployRG=${{ lower(parameters.deployRG) }} \
+                    deployNSG=${{ lower(parameters.deployNSG) }} \
+                    deployUDR=${{ lower(parameters.deployUDR) }} \
+                    deployVNet=${{ lower(parameters.deployVNet) }} \
+                    deploypeering=false
+
+  # =========================== LANDING DEPLOY ===========================
+  - ${{ if eq(parameters.runLanding, true) }}:
+    - stage: Deploy_Landing
+      displayName: DEPLOY (Landing)
+      dependsOn: WhatIf_Landing
+      condition: and(succeeded(), or(eq(${{ parameters.runWhatIf }}, false), succeeded('WhatIf_Landing')))
+      jobs:
+      - ${{ each sub in parameters.landingSubscriptions }}:
+        - job: DEPLOY_LANDING_${{ replace(sub, '-', '_') }}
+          displayName: "DEPLOY → Landing / ${{ sub }}"
+          steps:
+
+          # ---- Phase 1: RGs only ----
+          - task: AzureCLI@2
+            displayName: "Phase 1: RGs only (Landing ${{ sub }})"
+            condition: eq('${{ parameters.deployRG }}','true')
+            inputs:
+              azureSubscription: ${{ variables[format('prodSc.{0}', upper(replace(sub,'-','_')))] }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              workingDirectory: $(Build.SourcesDirectory)
+              inlineScript: |
+                set -euo pipefail
+                PARAM_PATH="azure-iac/env/prod/Landing/${{ sub }}/${{ parameters.regionFile }}"
+                echo "Phase 1 (RGs) Landing → ${{ sub }} using $PARAM_PATH"
+
+                az deployment sub create \
+                  --location centralus \
+                  --template-file azure-iac/main.bicep \
+                  --parameters @"$PARAM_PATH" \
+                    deployRG=true \
+                    deployNSG=false \
+                    deployUDR=false \
+                    deployVNet=false \
+                    deploypeering=false \
+                    deploylb=false
+
+          # ---- Wait for RGs (propagation) ----
+          - task: AzureCLI@2
+            displayName: "Wait for RGs (Landing ${{ sub }})"
+            condition: eq('${{ parameters.deployRG }}','true')
+            inputs:
+              azureSubscription: ${{ variables[format('prodSc.{0}', upper(replace(sub,'-','_')))] }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              workingDirectory: $(Build.SourcesDirectory)
+              inlineScript: |
+                set -euo pipefail
+                PARAM_PATH="azure-iac/env/prod/Landing/${{ sub }}/${{ parameters.regionFile }}"
+                rgName=$(jq -r '.parameters.rgName.value' "$PARAM_PATH")
+                echo "Waiting for main RG: $rgName"
+                az group wait --name "$rgName" --created --timeout 300
+
+                addRgCount=$(jq '.parameters.additionalResourceGroups.value | length' "$PARAM_PATH" 2>/dev/null || echo 0)
+                if [ "$addRgCount" -gt 0 ]; then
+                  for i in $(seq 0 $((addRgCount-1))); do
+                    addRgName=$(jq -r ".parameters.additionalResourceGroups.value[$i].name" "$PARAM_PATH")
+                    echo "Waiting for additional RG: $addRgName"
+                    az group wait --name "$addRgName" --created --timeout 300 || true
+                  done
+                fi
+
+          # ---- Phase 2: Core (no peering) ----
+          - task: AzureCLI@2
+            displayName: "Phase 2: Core (Landing ${{ sub }})"
+            condition: or(
+                         eq('${{ parameters.deployNSG }}','true'),
+                         eq('${{ parameters.deployUDR }}','true'),
+                         eq('${{ parameters.deployVNet }}','true')
+                       )
+            inputs:
+              azureSubscription: ${{ variables[format('prodSc.{0}', upper(replace(sub,'-','_')))] }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              workingDirectory: $(Build.SourcesDirectory)
+              inlineScript: |
+                set -euo pipefail
+                PARAM_PATH="azure-iac/env/prod/Landing/${{ sub }}/${{ parameters.regionFile }}"
+                echo "Phase 2 (Core) Landing → ${{ sub }} using $PARAM_PATH"
+
+                az deployment sub create \
+                  --location centralus \
+                  --template-file azure-iac/main.bicep \
+                  --parameters @"$PARAM_PATH" \
+                    deployRG=false \
+                    deployNSG=${{ lower(parameters.deployNSG) }} \
+                    deployUDR=${{ lower(parameters.deployUDR) }} \
+                    deployVNet=${{ lower(parameters.deployVNet) }} \
+                    deploypeering=false
+
+  # =========================== PEERINGS (PLATFORM) — AFTER LANDING ===========================
+  - ${{ if and(eq(parameters.runPlatform, true), eq(parameters.deploypeering, true)) }}:
+    - stage: Deploy_Peerings_Platform
+      displayName: "PEERINGS (Platform: Identity ↔ Connectivity) — AFTER Landing"
+      dependsOn:
+        - Deploy_Platform
+        - Deploy_Landing
+      condition: succeeded()
+      jobs:
+      - ${{ each sub in parameters.platformSubscriptions }}:
+        - job: PLATFORM_PEERING_${{ replace(sub, '-', '_') }}
+          displayName: "Platform Peering / ${{ sub }}"
+          steps:
+          - task: AzureCLI@2
+            displayName: "Create Platform Peerings (${{ sub }})"
+            inputs:
+              azureSubscription: ${{ variables[format('prodSc.{0}', upper(replace(sub,'-','_')))] }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              workingDirectory: $(Build.SourcesDirectory)
+              inlineScript: |
+                set -euo pipefail
+
+                PARAM_PATH="azure-iac/env/prod/Platform/${{ sub }}/${{ parameters.regionFile }}"
+                echo "Platform peering for ${{ sub }} using $PARAM_PATH"
+
+                # Wait for local VNets (created in Platform Phase 2)
+                rgName=$(jq -r '.parameters.rgName.value' "$PARAM_PATH")
+                vnetCount=$(jq '.parameters.vnets.value | length' "$PARAM_PATH" 2>/dev/null || echo 0)
+                if [ "$vnetCount" -gt 0 ]; then
+                  for i in $(seq 0 $((vnetCount-1))); do
+                    vnetName=$(jq -r ".parameters.vnets.value[$i].vnetName" "$PARAM_PATH")
+                    echo "Waiting for local VNet $vnetName in RG $rgName"
+                    for t in {1..30}; do
+                      if az network vnet show -g "$rgName" -n "$vnetName" &>/dev/null; then
+                        echo "Found local VNet: $vnetName"
+                        break
+                      fi
+                      echo "Local VNet not found yet; retry $t/30..."
+                      sleep 10
+                    done
+                  done
+                fi
+
+                # Wait for remote VNets referenced by peerings (Landing or hub/spoke targets)
+                peerCount=$(jq '.parameters.peerings.value | length' "$PARAM_PATH" 2>/dev/null || echo 0)
+                if [ "$peerCount" -gt 0 ]; then
+                  for i in $(seq 0 $((peerCount-1))); do
+                    remoteId=$(jq -r ".parameters.peerings.value[$i].remoteVnetId" "$PARAM_PATH")
+                    if [ -n "$remoteId" ] && [ "$remoteId" != "null" ]; then
+                      echo "Waiting for remote VNet: $remoteId"
+                      for t in {1..30}; do
+                        if az resource show --ids "$remoteId" &>/dev/null; then
+                          echo "Found remote VNet: $remoteId"
+                          break
+                        fi
+                        echo "Remote VNet not found yet; retry $t/30..."
+                        sleep 10
+                      done
+                    fi
+                  done
+                fi
+
+                # Deploy ONLY peerings from the platform parameter file
+                az deployment sub create \
+                  --location centralus \
+                  --template-file azure-iac/main.bicep \
+                  --parameters @"$PARAM_PATH" \
+                    deployRG=false \
+                    deployNSG=false \
+                    deployUDR=false \
+                    deployVNet=false \
+                    deploypeering=true
+
+  # =========================== PEERINGS (LANDING) ===========================
+  - ${{ if and(eq(parameters.runLanding, true), eq(parameters.deploypeering, true)) }}:
+    - stage: Deploy_Peerings_Landing
+      displayName: "PEERINGS (Landing: Spokes ↔ Hub)"
+      dependsOn: Deploy_Peerings_Platform
+      condition: succeeded()
+      jobs:
+      - ${{ each sub in parameters.landingSubscriptions }}:
+        - job: PEERING_${{ replace(sub, '-', '_') }}
+          displayName: "Landing Peering / ${{ sub }}"
+          steps:
+          - task: AzureCLI@2
+            displayName: "Create Landing Peerings (${{ sub }})"
+            inputs:
+              azureSubscription: ${{ variables[format('prodSc.{0}', upper(replace(sub,'-','_')))] }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              workingDirectory: $(Build.SourcesDirectory)
+              inlineScript: |
+                set -euo pipefail
+
+                PARAM_PATH="azure-iac/env/prod/Landing/${{ sub }}/${{ parameters.regionFile }}"
+                echo "Peering for Landing → ${{ sub }} using $PARAM_PATH"
+
+                # --- Wait for local VNets (created in Landing Phase 2)
+                rgName=$(jq -r '.parameters.rgName.value' "$PARAM_PATH")
+                vnetCount=$(jq '.parameters.vnets.value | length' "$PARAM_PATH" 2>/dev/null || echo 0)
+                if [ "$vnetCount" -gt 0 ]; then
+                  for i in $(seq 0 $((vnetCount-1))); do
+                    vnetName=$(jq -r ".parameters.vnets.value[$i].vnetName" "$PARAM_PATH")
+                    echo "Waiting for local VNet $vnetName in RG $rgName"
+                    for t in {1..30}; do
+                      if az network vnet show -g "$rgName" -n "$vnetName" &>/dev/null; then
+                        echo "Found local VNet: $vnetName"
+                        break
+                      fi
+                      echo "Local VNet not found yet; retry $t/30..."
+                      sleep 10
+                    done
+                  done
+                fi
+
+                # --- Wait for remote VNets (Connectivity hubs) referenced by peerings
+                peerCount=$(jq '.parameters.peerings.value | length' "$PARAM_PATH" 2>/dev/null || echo 0)
+                if [ "$peerCount" -gt 0 ]; then
+                  for i in $(seq 0 $((peerCount-1))); do
+                    remoteId=$(jq -r ".parameters.peerings.value[$i].remoteVnetId" "$PARAM_PATH")
+                    if [ -n "$remoteId" ] && [ "$remoteId" != "null" ]; then
+                      echo "Waiting for remote VNet: $remoteId"
+                      for t in {1..30}; do
+                        if az resource show --ids "$remoteId" &>/dev/null; then
+                          echo "Found remote VNet: $remoteId"
+                          break
+                        fi
+                        echo "Remote VNet not found yet; retry $t/30..."
+                        sleep 10
+                      done
+                    fi
+                  done
+                fi
+
+                # --- Deploy ONLY the peerings now
+                az deployment sub create \
+                  --location centralus \
+                  --template-file azure-iac/main.bicep \
+                  --parameters @"$PARAM_PATH" \
+                    deployRG=false \
+                    deployNSG=false \
+                    deployUDR=false \
+                    deployVNet=false \
+                    deploypeering=true
